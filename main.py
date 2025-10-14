@@ -459,7 +459,7 @@ with st.container():
 
     col0_1, col0_2 = st.columns([7,12])
     with col0_1:
-        st.subheader("🏆 Top 5 y Bottom 5 Regiones por Geoeficiencia")
+        st.subheader(f"🏆 Top 5 y Bottom 5 Regiones por {indicador_seleccionado}")
         st.plotly_chart(
             fig_top,
             config={"responsive": True},
