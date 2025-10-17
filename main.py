@@ -1,6 +1,21 @@
 import streamlit as st
 import pandas as pd
 
+def agregar_columna_primer_cliente(df_tabla, df_region, modo):
+    if "Primer cliente (hr)" in df_tabla.columns:
+        df_tabla = df_tabla.drop(columns=["Primer cliente (hr)"])
+    df_tabla_hora = (
+        df_region.pivot_table(
+            index=['Jefatura' if modo == "Jefatura" else 'Ruta'],
+            values=['Primer cliente (hr)'],
+            aggfunc='mean'
+        )
+    )
+    df_tabla_hora['Primer cliente (hr)'] = df_tabla_hora['Primer cliente (hr)'].apply(
+        lambda x: (pd.Timestamp('1900-01-01') + x).strftime('%H:%M:%S') if pd.notnull(x) else ''
+    )
+    return df_tabla.join(df_tabla_hora)
+
 st.set_page_config(page_title="Dashboard Maestro RTM - MRK", layout="wide")
 
 st.markdown("""
@@ -27,6 +42,9 @@ df_mrk = pd.read_parquet('bdd_mrk_cp.parquet')
 
 df_mrk['Jefatura'] = df_mrk['Jefatura'].astype(str).str.strip()
 df_mrk = df_mrk[df_mrk['Jefatura'].notna() & (df_mrk['Jefatura'] != '')]
+
+# Conversión de columna de hora a timedelta
+df_mrk['Primer cliente (hr)'] = pd.to_timedelta(df_mrk['Primer cliente (hr)'])
 
 col1_1, col1_2, col1_3 = st.columns([1.5,2,5])
 
@@ -420,9 +438,27 @@ def style_tabla_ruta(df, delta_col):
     def color_celda(valor):
         if pd.isnull(valor):
             return ''
-        if valor > 89.99:
+
+        # 🕒 Si el valor es un string con formato HH:MM:SS (Primer cliente (hr))
+        if isinstance(valor, str) and ':' in valor:
+            try:
+                hora = pd.to_datetime(valor, format='%H:%M:%S').time()
+                if hora > pd.to_datetime('09:00:00', format='%H:%M:%S').time():
+                    return 'background-color: #FF5757; color: white;'  # Rojo si > 9AM
+                else:
+                    return 'background-color: #7ED957; color: black;'  # Verde si <= 9AM
+            except Exception:
+                return ''
+
+        # 📊 Si el valor es numérico
+        try:
+            val = float(valor)
+        except (ValueError, TypeError):
+            return ''
+
+        if val > 89.99:
             return 'background-color: #7ED957; color: black;'
-        elif valor >= 50:
+        elif val >= 50:
             return 'background-color: #FFBD59; color: black;'
         else:
             return 'background-color: #FF5757; color: white;'
@@ -441,9 +477,13 @@ def style_tabla_ruta(df, delta_col):
     kpi_cols = [c for c in df.columns if not c.startswith("Δ")]
     delta_cols = [c for c in df.columns if c.startswith("Δ")]
 
-    # Construir diccionario de formato para TODAS las columnas de una vez
-    format_dict = {col: "{:.1f}%" for col in kpi_cols}
-    format_dict.update({col: "{:+.1f}%" for col in delta_cols})
+    # Excluir explícitamente la columna de horas del formateo numérico
+    format_dict = {}
+    for col in kpi_cols:
+        if col != "Primer cliente (hr)":
+            format_dict[col] = "{:.1f}%"
+    for col in delta_cols:
+        format_dict[col] = "{:+.1f}%"
 
     styled = df.style.format(format_dict)
 
@@ -498,7 +538,24 @@ with st.container():
                         values=[indicador_seleccionado],
                         aggfunc='mean'
                     ) * 100
-                ).sort_values(by=indicador_seleccionado, ascending=True)
+                )
+                # --- Añadir promedio de la columna 'Primer cliente (hr)' solo si se selecciona ese KPI ---
+                if indicador_seleccionado == "Primer cliente (%)":
+                    df_tabla_hora = (
+                        df_region.pivot_table(
+                            index=['Jefatura' if modo_tabla == "Jefatura" else 'Ruta'],
+                            values=['Primer cliente (hr)'],
+                            aggfunc='mean'
+                        )
+                    )
+                    df_tabla_hora['Primer cliente (hr)'] = df_tabla_hora['Primer cliente (hr)'].apply(
+                        lambda x: (pd.Timestamp('1900-01-01') + x).strftime('%H:%M:%S') if pd.notnull(x) else ''
+                    )
+                    df_tabla = df_tabla.join(df_tabla_hora)
+                # --- Añadir promedio de la columna 'Primer cliente (hr)' solo si se selecciona ese KPI ---
+                if indicador_seleccionado == "Primer cliente (%)":
+                    df_tabla = agregar_columna_primer_cliente(df_tabla, df_region, modo_tabla)
+                df_tabla = df_tabla.sort_values(by=indicador_seleccionado, ascending=True)
                 delta_col = None
                 # Soporte para delta cuando comparación está activa
                 if activar_comparacion and rango_comparativo is not None and isinstance(rango_comparativo, tuple) and len(rango_comparativo) == 2:
@@ -551,7 +608,10 @@ with st.container():
                         values=[indicador_seleccionado],
                         aggfunc='mean'
                     ) * 100
-                ).sort_values(by=indicador_seleccionado, ascending=True)
+                )
+                if indicador_seleccionado == "Primer cliente (%)":
+                    df_tabla = agregar_columna_primer_cliente(df_tabla, df_region, modo_tabla)
+                df_tabla = df_tabla.sort_values(by=indicador_seleccionado, ascending=True)
                 delta_col = None
                 # Soporte para delta cuando comparación está activa
                 if activar_comparacion and rango_comparativo is not None and isinstance(rango_comparativo, tuple) and len(rango_comparativo) == 2:
@@ -591,3 +651,304 @@ with st.container():
                 )
 
 st.divider()
+
+df_uo_mod = df_mrk_mod.pivot_table(
+    index='Nombre UO',
+    values=['Geoeficiencia','Geoefectividad','Efectividad omnicanal','Primer cliente (%)','Tiempo de servicio (%)'],
+    aggfunc='mean'
+) * 100
+
+
+# 📊 Sección para MODERNO / MAYORISTAS
+with st.container():
+    # ------------------------------------------
+    # FILTRO DE REGION MODERNO/MAYORISTAS
+    # ------------------------------------------
+    filtro_region_mod = st.radio(
+        "Filtrar por:",
+        options=["Todas", "Moderno", "Mayoristas"],
+        horizontal=True,
+        key="filtro_region_mod"
+    )
+
+    col_mod_1, col_mod_2 = st.columns([7, 12])
+
+    # Aplicar filtro ANTES de calcular top/bottom y tablas
+    df_mrk_mod_filtrado = df_mrk_mod.copy()
+    if filtro_region_mod == "Moderno":
+        df_mrk_mod_filtrado = df_mrk_mod_filtrado[df_mrk_mod_filtrado['Región'] == 'MODERNO']
+    elif filtro_region_mod == "Mayoristas":
+        df_mrk_mod_filtrado = df_mrk_mod_filtrado[df_mrk_mod_filtrado['Región'] == 'MAYORISTAS']
+    # Si "Todas", no filtra
+
+    # Recalcular tabla de UOs con el filtro aplicado
+    df_uo_mod = df_mrk_mod_filtrado.pivot_table(
+        index='Nombre UO',
+        values=['Geoeficiencia','Geoefectividad','Efectividad omnicanal','Primer cliente (%)','Tiempo de servicio (%)'],
+        aggfunc='mean'
+    ) * 100
+
+    # 🧮 Top y Bottom 5 MOD
+    df_top5_mod = df_uo_mod.sort_values(by=indicador_seleccionado, ascending=False).head(5)
+    df_bottom5_mod = df_uo_mod.sort_values(by=indicador_seleccionado, ascending=True).head(5)
+
+    # 🔹 Asegurar que 'Nombre UO' sea columna antes de graficar
+    df_top5_mod = df_top5_mod.reset_index().rename(columns={"index": "Nombre UO"})
+    df_bottom5_mod = df_bottom5_mod.reset_index().rename(columns={"index": "Nombre UO"})
+
+    # 🖌️ Colores según valor
+    df_top5_mod = df_top5_mod.assign(color=df_top5_mod[indicador_seleccionado].apply(asignar_color))
+    df_bottom5_mod = df_bottom5_mod.assign(color=df_bottom5_mod[indicador_seleccionado].apply(asignar_color))
+
+    # --- Calcular diferencias si hay comparación activa ---
+    if activar_comparacion and 'df_mrk_mod_comp' in globals() and not df_mrk_mod_comp.empty:
+        df_comp_mod_uo = df_mrk_mod_comp.pivot_table(
+            index='Nombre UO',
+            values=[indicador_seleccionado],
+            aggfunc='mean'
+        ) * 100
+
+        # ✅ Top 5 diferencia
+        if not df_top5_mod.empty:
+            idx_inter_top_mod = set(df_top5_mod['Nombre UO']).intersection(set(df_comp_mod_uo.index))
+            df_top5_mod = df_top5_mod[df_top5_mod['Nombre UO'].isin(idx_inter_top_mod)]
+            df_top5_mod = df_top5_mod.merge(
+                df_comp_mod_uo[indicador_seleccionado],
+                left_on='Nombre UO',
+                right_index=True,
+                suffixes=('', '_comp')
+            )
+            df_top5_mod['Diferencia'] = df_top5_mod[indicador_seleccionado] - df_top5_mod[
+                f'{indicador_seleccionado}_comp']
+
+        # ✅ Bottom 5 diferencia
+        if not df_bottom5_mod.empty:
+            idx_inter_bottom_mod = set(df_bottom5_mod['Nombre UO']).intersection(set(df_comp_mod_uo.index))
+            df_bottom5_mod = df_bottom5_mod[df_bottom5_mod['Nombre UO'].isin(idx_inter_bottom_mod)]
+            df_bottom5_mod = df_bottom5_mod.merge(
+                df_comp_mod_uo[indicador_seleccionado],
+                left_on='Nombre UO',
+                right_index=True,
+                suffixes=('', '_comp')
+            )
+            df_bottom5_mod['Diferencia'] = df_bottom5_mod[indicador_seleccionado] - df_bottom5_mod[
+                f'{indicador_seleccionado}_comp']
+
+    # 🥇 Top 5 MOD
+    fig_top_mod = px.bar(
+        df_top5_mod,
+        x='Nombre UO',
+        y=indicador_seleccionado,
+        text=indicador_seleccionado if 'Diferencia' not in df_top5_mod.columns else None,
+    )
+    if 'Diferencia' in df_top5_mod.columns:
+        fig_top_mod.update_traces(
+            marker_color=df_top5_mod['color'],
+            text=[f"{row[indicador_seleccionado]:.1f}% ({row['Diferencia']:+.1f}%)" for idx, row in
+                  df_top5_mod.iterrows()],
+            texttemplate='%{text}',
+            textposition='outside'
+        )
+    else:
+        fig_top_mod.update_traces(
+            marker_color=df_top5_mod['color'],
+            texttemplate='%{text:.1f}%',
+            textposition='outside'
+        )
+
+    fig_top_mod.update_layout(
+        title=f'🏆 Top 5 {indicador_seleccionado} {filtro_region_mod}',
+        yaxis_title=f"{indicador_seleccionado} (%)",
+        xaxis_title="Nombre UO",
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='white'),
+        height=420,
+    )
+
+    # 🪫 Bottom 5 MOD
+    fig_bottom_mod = px.bar(
+        df_bottom5_mod,
+        x='Nombre UO',
+        y=indicador_seleccionado,
+        text=indicador_seleccionado if 'Diferencia' not in df_bottom5_mod.columns else None,
+    )
+    if 'Diferencia' in df_bottom5_mod.columns:
+        fig_bottom_mod.update_traces(
+            marker_color=df_bottom5_mod['color'],
+            text=[f"{row[indicador_seleccionado]:.1f}% ({row['Diferencia']:+.1f}%)" for idx, row in
+                  df_bottom5_mod.iterrows()],
+            texttemplate='%{text}',
+            textposition='outside'
+        )
+    else:
+        fig_bottom_mod.update_traces(
+            marker_color=df_bottom5_mod['color'],
+            texttemplate='%{text:.1f}%',
+            textposition='outside'
+        )
+
+    fig_bottom_mod.update_layout(
+        title=f'🪫 Bottom 5 {indicador_seleccionado} {filtro_region_mod}',
+        yaxis_title=f"{indicador_seleccionado} (%)",
+        xaxis_title="Nombre UO",
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='white'),
+        height=420,
+    )
+
+    # -------------------------------
+    # 📈 Gráficas Top & Bottom 5
+    # -------------------------------
+    with col_mod_1:
+        st.subheader(f"🏆 Top 5 y Bottom 5 {filtro_region_mod} por {indicador_seleccionado}")
+        st.plotly_chart(
+            fig_top_mod,
+            config={"responsive": True},
+            use_container_width=True,
+            key="fig_top_mod"
+        )
+        st.plotly_chart(
+            fig_bottom_mod,
+            config={"responsive": True},
+            use_container_width=True,
+            key="fig_bottom_mod"
+        )
+
+    # -------------------------------
+    # 📊 Tablas por región
+    # -------------------------------
+    with col_mod_2:
+        # 📊 Sección para MODERNO / MAYORISTAS — Tablas agrupadas por Nombre UO
+        with st.container():
+            st.subheader(f"📊 Indicadores por Región — {indicador_seleccionado} {filtro_region_mod}")
+            modo_tabla_mod_uo = st.radio(
+                "📊 Ver tablas por:",
+                options=["Jefatura", "Ruta"],
+                horizontal=True,
+                key="modo_tabla_selector_mod_uo"
+            )
+
+            uos_unicas_mod = sorted(df_mrk_mod_filtrado["Nombre UO"].dropna().unique())
+            uos_top_mod = uos_unicas_mod[:5]
+            uos_bottom_mod = uos_unicas_mod[5:]
+
+            # 🧾 Top UOs MOD
+            if len(uos_top_mod) > 0:
+                cols_top_mod = st.columns(len(uos_top_mod))
+                for i, uo in enumerate(uos_top_mod):
+                    with cols_top_mod[i]:
+                        df_region = df_mrk_mod_filtrado[df_mrk_mod_filtrado["Nombre UO"] == uo]
+                        if df_region.empty:
+                            st.info(f"⚠️ {uo} sin datos")
+                            continue
+                        df_tabla = (
+                                df_region.pivot_table(
+                                    index=['Jefatura' if modo_tabla_mod_uo == "Jefatura" else 'Ruta'],
+                                    values=[indicador_seleccionado],
+                                    aggfunc='mean'
+                                ) * 100
+                        )
+                        # --- Añadir promedio de la columna 'Primer cliente (hr)' solo si se selecciona ese KPI ---
+                        if indicador_seleccionado == "Primer cliente (%)":
+                            df_tabla = agregar_columna_primer_cliente(df_tabla, df_region, modo_tabla_mod_uo)
+                        df_tabla = df_tabla.sort_values(by=indicador_seleccionado, ascending=True)
+
+                        delta_col = None
+                        # Soporte para delta cuando comparación está activa
+                        if activar_comparacion and rango_comparativo is not None and isinstance(rango_comparativo,
+                                                                                                tuple) and len(
+                                rango_comparativo) == 2:
+                            if 'df_mrk_mod_comp' in globals() and not df_mrk_mod_comp.empty:
+                                df_region_comp = df_mrk_mod_comp[df_mrk_mod_comp['Nombre UO'] == uo]
+                            else:
+                                df_region_comp = pd.DataFrame()
+                            if not df_region_comp.empty:
+                                df_tabla_comp = (
+                                        df_region_comp.pivot_table(
+                                            index=['Jefatura' if modo_tabla_mod_uo == "Jefatura" else 'Ruta'],
+                                            values=[indicador_seleccionado],
+                                            aggfunc='mean'
+                                        ) * 100
+                                )
+                                idx_inter = df_tabla.index.intersection(df_tabla_comp.index)
+                                df_tabla_int = df_tabla.reindex(idx_inter).fillna(0)
+                                df_tabla_comp_int = df_tabla_comp.reindex(idx_inter).fillna(0)
+                                if not df_tabla_int.empty and not df_tabla_comp_int.empty:
+                                    df_delta = df_tabla_int[indicador_seleccionado] - df_tabla_comp_int[
+                                        indicador_seleccionado]
+                                    delta_col = f"Δ {KPI_ABREV[indicador_seleccionado]}"
+                                    df_tabla_int.insert(1, delta_col, df_delta)
+                                    st.markdown(f"**{uo}**")
+                                    st.dataframe(
+                                        style_tabla_ruta(df_tabla_int, delta_col),
+                                        height=300
+                                    )
+                                    continue
+                        st.markdown(f"**{uo}**")
+                        st.dataframe(
+                            style_tabla_ruta(df_tabla, None),
+                            height=300
+                        )
+            else:
+                st.info("⚠️ No hay Regiones en el Top para esta categoría")
+
+            # 🧾 Bottom UOs MOD
+            if len(uos_bottom_mod) > 0:
+                cols_bottom_mod = st.columns(len(uos_bottom_mod))
+                for i, uo in enumerate(uos_bottom_mod):
+                    with cols_bottom_mod[i]:
+                        df_region = df_mrk_mod_filtrado[df_mrk_mod_filtrado["Nombre UO"] == uo]
+                        if df_region.empty:
+                            st.info(f"⚠️ {uo} sin datos")
+                            continue
+                        df_tabla = (
+                                df_region.pivot_table(
+                                    index=['Jefatura' if modo_tabla_mod_uo == "Jefatura" else 'Ruta'],
+                                    values=[indicador_seleccionado],
+                                    aggfunc='mean'
+                                ) * 100
+                        )
+                        # --- Añadir promedio de la columna 'Primer cliente (hr)' solo si se selecciona ese KPI ---
+                        if indicador_seleccionado == "Primer cliente (%)":
+                            df_tabla = agregar_columna_primer_cliente(df_tabla, df_region, modo_tabla_mod_uo)
+                        df_tabla = df_tabla.sort_values(by=indicador_seleccionado, ascending=True)
+
+                        delta_col = None
+                        if activar_comparacion and rango_comparativo is not None and isinstance(rango_comparativo,
+                                                                                                tuple) and len(
+                                rango_comparativo) == 2:
+                            if 'df_mrk_mod_comp' in globals() and not df_mrk_mod_comp.empty:
+                                df_region_comp = df_mrk_mod_comp[df_mrk_mod_comp['Nombre UO'] == uo]
+                            else:
+                                df_region_comp = pd.DataFrame()
+                            if not df_region_comp.empty:
+                                df_tabla_comp = (
+                                        df_region_comp.pivot_table(
+                                            index=['Jefatura' if modo_tabla_mod_uo == "Jefatura" else 'Ruta'],
+                                            values=[indicador_seleccionado],
+                                            aggfunc='mean'
+                                        ) * 100
+                                )
+                                idx_inter = df_tabla.index.intersection(df_tabla_comp.index)
+                                df_tabla_int = df_tabla.reindex(idx_inter).fillna(0)
+                                df_tabla_comp_int = df_tabla_comp.reindex(idx_inter).fillna(0)
+                                if not df_tabla_int.empty and not df_tabla_comp_int.empty:
+                                    df_delta = df_tabla_int[indicador_seleccionado] - df_tabla_comp_int[
+                                        indicador_seleccionado]
+                                    delta_col = f"Δ {KPI_ABREV[indicador_seleccionado]}"
+                                    df_tabla_int.insert(1, delta_col, df_delta)
+                                    st.markdown(f"**{uo}**")
+                                    st.dataframe(
+                                        style_tabla_ruta(df_tabla_int, delta_col),
+                                        height=300
+                                    )
+                                    continue
+                        st.markdown(f"**{uo}**")
+                        st.dataframe(
+                            style_tabla_ruta(df_tabla, None),
+                            height=300
+                        )
+            else:
+                st.info("⚠️ No hay Regiones en el Bottom para esta categoría")
