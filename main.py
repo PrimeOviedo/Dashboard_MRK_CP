@@ -89,7 +89,6 @@ with col1_2:
             key="rango_comparativo"
         )
 
-
 # --- Filtrado base y comparativo ---
 if isinstance(rango_fechas, tuple) and len(rango_fechas) == 2:
     fecha_inicio, fecha_fin = rango_fechas
@@ -100,6 +99,44 @@ if isinstance(rango_fechas, tuple) and len(rango_fechas) == 2:
 else:
     df_base = df_mrk.copy()
 
+with col1_3:
+
+    # 📌 Opción para incluir o excluir Farmer Comercial (solo afecta a Tradicional)
+    farmer_option = st.radio(
+        "👤 Filtrado de Farmer Comercial:",
+        options=["Incluir todo", "Solo Farmer Comercial", "Excluir Farmer Comercial"],
+        horizontal=True,
+        key="farmer_option"
+    )
+
+# --- Filtrado base TRADICIONAL (sin moderno/mayoristas) ---
+df_mrk_trad_base = df_mrk[~df_mrk['Región'].isin(['MODERNO', 'MAYORISTAS'])]
+
+if farmer_option == "Solo Farmer Comercial":
+    df_mrk_trad_base = df_mrk_trad_base[df_mrk_trad_base['Descripción Tipo'] == 'Farmer Comercial']
+elif farmer_option == "Excluir Farmer Comercial":
+    df_mrk_trad_base = df_mrk_trad_base[df_mrk_trad_base['Descripción Tipo'] != 'Farmer Comercial']
+
+# --- Aplicar filtro de fechas a TRADICIONAL ---
+if isinstance(rango_fechas, tuple) and len(rango_fechas) == 2:
+    fecha_inicio, fecha_fin = rango_fechas
+    df_mrk_trad = df_mrk_trad_base[
+        (df_mrk_trad_base["Fecha inicio"].dt.date >= fecha_inicio) &
+        (df_mrk_trad_base["Fecha inicio"].dt.date <= fecha_fin)
+    ]
+else:
+    df_mrk_trad = df_mrk_trad_base.copy()
+
+# --- MODERNO/MAYORISTAS (NO SE TOCA por Farmer Comercial) ---
+if isinstance(rango_fechas, tuple) and len(rango_fechas) == 2:
+    df_mrk_mod = df_mrk[
+        (df_mrk["Fecha inicio"].dt.date >= fecha_inicio) &
+        (df_mrk["Fecha inicio"].dt.date <= fecha_fin) &
+        (df_mrk['Región'].isin(['MODERNO', 'MAYORISTAS']))
+    ]
+else:
+    df_mrk_mod = df_mrk[df_mrk['Región'].isin(['MODERNO', 'MAYORISTAS'])]
+
 df_comp = pd.DataFrame()
 if activar_comparacion and rango_comparativo is not None and isinstance(rango_comparativo, tuple) and len(rango_comparativo) == 2:
     fecha_inicio_comp, fecha_fin_comp = rango_comparativo
@@ -108,17 +145,34 @@ if activar_comparacion and rango_comparativo is not None and isinstance(rango_co
         (df_mrk["Fecha inicio"].dt.date <= fecha_fin_comp)
     ]
 
-# --- KPIs base ---
-df_zona = df_base.pivot_table(index='Zona', values=['Geoeficiencia','Geoefectividad','Efectividad omnicanal','Primer cliente (%)','Tiempo de servicio (%)'], aggfunc='mean')
+ # --- KPIs base ---
+# Si estás incluyendo/excluyendo Farmer, usar df_mrk_trad
+if farmer_option != "Incluir todas":
+    df_zona = df_mrk_trad.pivot_table(
+        index='Zona',
+        values=['Geoeficiencia','Geoefectividad','Efectividad omnicanal','Primer cliente (%)','Tiempo de servicio (%)'],
+        aggfunc='mean'
+    )
+else:
+    df_zona = df_base.pivot_table(
+        index='Zona',
+        values=['Geoeficiencia','Geoefectividad','Efectividad omnicanal','Primer cliente (%)','Tiempo de servicio (%)'],
+        aggfunc='mean'
+    )
 
-df_mrk_trad = df_base[~df_base['Región'].isin(['MODERNO','MAYORISTAS'])]
-df_regiones_trad = df_mrk_trad.pivot_table(index='Región', values=['Geoeficiencia','Geoefectividad','Efectividad omnicanal','Primer cliente (%)','Tiempo de servicio (%)'], aggfunc='mean')
+# Usar df_mrk_trad para tradicional (ya filtrado por Farmer Comercial)
+df_regiones_trad = df_mrk_trad.pivot_table(
+    index='Región',
+    values=['Geoeficiencia','Geoefectividad','Efectividad omnicanal','Primer cliente (%)','Tiempo de servicio (%)'],
+    aggfunc='mean'
+) * 100
 
-df_mrk_mod = df_base[df_base['Región'].isin(['MODERNO','MAYORISTAS'])]
-df_regiones_mod = df_mrk_mod.pivot_table(index='Región', values=['Geoeficiencia','Geoefectividad','Efectividad omnicanal','Primer cliente (%)','Tiempo de servicio (%)'], aggfunc='mean')
-# 📈 Multiplicar todos los valores por 100
-df_regiones_trad = df_regiones_trad * 100
-df_regiones_mod = df_regiones_mod * 100
+# Para MODERNO/MAYORISTAS, usar df_mrk_mod (no afectado por Farmer Comercial)
+df_regiones_mod = df_mrk_mod.pivot_table(
+    index='Región',
+    values=['Geoeficiencia','Geoefectividad','Efectividad omnicanal','Primer cliente (%)','Tiempo de servicio (%)'],
+    aggfunc='mean'
+) * 100
 
 # Diccionario de abreviaciones de KPIs (mover a global)
 KPI_ABREV = {
@@ -312,6 +366,7 @@ def asignar_color(valor):
         return '#FF5757'  # Rojo
 
 # 🧮 Ordenar dinámicamente por el indicador seleccionado
+# Top/Bottom 5 sobre df_regiones_trad (ya filtrado por Farmer Comercial)
 df_top5 = df_regiones_trad.sort_values(by=indicador_seleccionado, ascending=False).head(5)
 df_bottom5 = df_regiones_trad.sort_values(by=indicador_seleccionado, ascending=True).head(5)
 
@@ -339,7 +394,7 @@ df_bottom5 = df_bottom5.assign(color=df_bottom5[indicador_seleccionado].apply(as
 # 🧭 Indicador actual
 indicador = indicador_seleccionado
 
-# 📊 Agrupar por Región y Jefatura SOLO con el DF base filtrado
+# 📊 Agrupar por Región y Jefatura SOLO con el DF base filtrado (df_mrk_trad ya filtrado por Farmer Comercial)
 df_jef = (
     df_mrk_trad[df_mrk_trad['Región'].isin(df_top5.index.tolist() + df_bottom5.index.tolist())]
     .groupby(['Región', 'Jefatura'])[indicador]
@@ -584,14 +639,14 @@ with st.container():
                             st.markdown(f"**{region}**")
                             st.dataframe(
                                 style_tabla_ruta(df_tabla_int, delta_col),
-                                height=300
+                                height=350
                             )
                             continue
                 # Si no hay delta o comparación, mostrar tabla normal
                 st.markdown(f"**{region}**")
                 st.dataframe(
                     style_tabla_ruta(df_tabla, None),
-                    height=300
+                    height=350
                 )
 
         # 🧾 Bottom regiones
@@ -640,14 +695,14 @@ with st.container():
                             st.markdown(f"**{region}**")
                             st.dataframe(
                                 style_tabla_ruta(df_tabla_int, delta_col),
-                                height=300
+                                height=350
                             )
                             continue
                 # Si no hay delta o comparación, mostrar tabla normal
                 st.markdown(f"**{region}**")
                 st.dataframe(
                     style_tabla_ruta(df_tabla, None),
-                    height=300
+                    height=350
                 )
 
 st.divider()
@@ -883,13 +938,13 @@ with st.container():
                                     st.markdown(f"**{uo}**")
                                     st.dataframe(
                                         style_tabla_ruta(df_tabla_int, delta_col),
-                                        height=300
+                                        height=350
                                     )
                                     continue
                         st.markdown(f"**{uo}**")
                         st.dataframe(
                             style_tabla_ruta(df_tabla, None),
-                            height=300
+                            height=350
                         )
             else:
                 st.info("⚠️ No hay Regiones en el Top para esta categoría")
@@ -942,13 +997,13 @@ with st.container():
                                     st.markdown(f"**{uo}**")
                                     st.dataframe(
                                         style_tabla_ruta(df_tabla_int, delta_col),
-                                        height=300
+                                        height=350
                                     )
                                     continue
                         st.markdown(f"**{uo}**")
                         st.dataframe(
                             style_tabla_ruta(df_tabla, None),
-                            height=300
+                            height=350
                         )
             else:
                 st.info("⚠️ No hay Regiones en el Bottom para esta categoría")
