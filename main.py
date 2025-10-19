@@ -1,6 +1,15 @@
 import streamlit as st
 import pandas as pd
 
+hide_streamlit_style = """
+            <style>
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            header {visibility: hidden;}
+            </style>
+            """
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+
 def agregar_columna_primer_cliente(df_tabla, df_region, modo):
     if "Primer cliente (hr)" in df_tabla.columns:
         df_tabla = df_tabla.drop(columns=["Primer cliente (hr)"])
