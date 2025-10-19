@@ -1,13 +1,15 @@
 import streamlit as st
 import pandas as pd
 
+# 🔻 Ocultar "Built with Streamlit"
 hide_streamlit_style = """
-            <style>
-            #MainMenu {visibility: hidden;}
-            footer {visibility: hidden;}
-            header {visibility: hidden;}
-            </style>
-            """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    .stDeployButton {display:none;}
+    </style>
+"""
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 def agregar_columna_primer_cliente(df_tabla, df_region, modo):
