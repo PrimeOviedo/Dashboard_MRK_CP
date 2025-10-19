@@ -1016,3 +1016,5 @@ with st.container():
                         )
             else:
                 st.info("⚠️ No hay Regiones en el Bottom para esta categoría")
+st.divider()
+st.subheader("")
