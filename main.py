@@ -49,7 +49,12 @@ st.markdown("""
 
 st.title('Dashboard Mi Ruta KOF Centro-Pacifico')
 
-df_mrk = pd.read_parquet('bdd_mrk_cp.parquet')
+file_id = "1Pyr09HsOanL9c_e1sAf_Et6xl6zHFYKc"
+url = f"https://drive.google.com/uc?id={file_id}"
+
+#df_mrk = pd.read_parquet('bdd_mrk_cp.parquet')
+
+df_mrk = pd.read_parquet(url)
 
 df_mrk['Jefatura'] = df_mrk['Jefatura'].astype(str).str.strip()
 df_mrk = df_mrk[df_mrk['Jefatura'].notna() & (df_mrk['Jefatura'] != '')]
