@@ -1023,5 +1023,333 @@ with st.container():
                         )
             else:
                 st.info("⚠️ No hay Regiones en el Bottom para esta categoría")
+# =====================================================================
+# 📍 Indicadores por GEC (v3)
+#   - Gráficas y tabla principal: SIEMPRE por Región
+#   - Debajo: selector de Región + radio (Jefatura/Ruta) para la segunda tabla
+#   - Respeta filtros globales (Farmer, GEC, rangos, comparativo)
+# =====================================================================
 st.divider()
-st.subheader("")
+st.subheader("📍 Indicadores por GEC")
+
+# --- Utilidad: filtrar por rango (debe existir ANTES de usarse) ---
+def filtrar_por_rango(df, rango):
+    if isinstance(rango, tuple) and len(rango) == 2:
+        f_ini, f_fin = rango
+        return df[(df["Fecha inicio"].dt.date >= f_ini) & (df["Fecha inicio"].dt.date <= f_fin)]
+    return df
+
+# --- Cargar parquet y asegurar tipos ---
+df_gec = pd.read_parquet("bdd_mrk_cp_gec.parquet")
+
+# Tipos consistentes (evita warnings)
+df_gec["Fecha inicio"] = pd.to_datetime(df_gec["Fecha inicio"], format="%Y-%m-%d", errors="coerce")
+df_gec["Hora de llegada"] = pd.to_datetime(df_gec["Hora de llegada"], format="%H:%M:%S", errors="coerce")
+df_gec["Tiempo de atencion"] = pd.to_timedelta(df_gec["Tiempo de atencion"], errors="coerce")
+
+col_f1, col_f2, col_f3 = st.columns([2,1,5])
+
+with col_f1:
+    # --- Filtro de GEC ---
+    gecs_disponibles = sorted(df_gec["GEC"].dropna().unique())
+    gecs_seleccionados = st.multiselect(
+        "Selecciona uno o varios GEC:",
+        options=gecs_disponibles,
+        default=gecs_disponibles,
+        key="filtro_gec"
+    )
+
+with col_f2:
+    st.subheader("")
+
+with col_f3:
+
+    # --- Filtro Farmer ---
+    farmer_option = st.radio(
+        "Filtrar rutas Farmer:",
+        options=["Incluir todo", "Solo Farmer Comercial", "Excluir Farmer Comercial"],
+        horizontal=True,
+        key="filtro_farmer_gec"
+    )
+    if farmer_option == "Solo Farmer Comercial":
+        df_gec = df_gec[df_gec["Descripción Tipo"] == "Farmer Comercial"]
+    elif farmer_option == "Excluir Farmer Comercial":
+        df_gec = df_gec[df_gec["Descripción Tipo"] != "Farmer Comercial"]
+
+# Evita errores si no hay GEC seleccionados
+if not gecs_seleccionados:
+    st.warning("⚠️ Por favor selecciona al menos un GEC para continuar.")
+    st.stop()
+
+df_gec = df_gec[df_gec["GEC"].isin(gecs_seleccionados)]
+
+# --- Aplicar rangos ---
+df_gec_base = filtrar_por_rango(df_gec, rango_fechas)
+df_gec_comp = filtrar_por_rango(df_gec, rango_comparativo) if activar_comparacion else pd.DataFrame()
+
+# --- Promedio de hora válida (05:00–23:00) ---
+def hora_promedio(series):
+    horas = series if pd.api.types.is_datetime64_any_dtype(series) else pd.to_datetime(series, errors="coerce")
+    horas_validas = horas[(horas.dt.hour >= 5) & (horas.dt.hour <= 23)]
+    if horas_validas.empty:
+        return pd.NaT
+    segundos = (horas_validas.dt.hour * 3600 + horas_validas.dt.minute * 60 + horas_validas.dt.second).mean()
+    return pd.to_datetime("1900-01-01") + pd.to_timedelta(segundos, unit="s")
+
+# --- Calcular indicadores genérico ---
+def calcular_indicadores(df, columna_grupo):
+    if df.empty:
+        return pd.DataFrame()
+    g = (
+        df.groupby(columna_grupo)
+          .agg({
+              "Geoeficiencia": "sum",
+              "Geoefectividad": "sum",
+              "Pedido Omnicanal": "sum",
+              "Id cliente": "sum",
+              "Tiempo de atencion": "mean",
+              "Hora de llegada": hora_promedio,
+          })
+          .reset_index()
+    )
+    g["Geoeficiencia (%)"] = (g["Geoeficiencia"] / g["Id cliente"]) * 100
+    g["Geoefectividad (%)"] = (g["Geoefectividad"] / g["Id cliente"]) * 100
+    g["Pedido Omnicanal (%)"] = (g["Pedido Omnicanal"] / g["Id cliente"]) * 100
+    g["Hora de llegada"] = g["Hora de llegada"].dt.strftime("%H:%M:%S")
+    g["Tiempo de atencion"] = g["Tiempo de atencion"].apply(
+        lambda x: str(x).split(" days ")[-1].split(".")[0] if pd.notnull(x) else None
+    )
+    g.rename(columns={columna_grupo: "Nivel"}, inplace=True)
+    return g[["Nivel", "Geoeficiencia (%)", "Geoefectividad (%)", "Pedido Omnicanal (%)", "Tiempo de atencion", "Hora de llegada"]]
+
+# ================
+# 1) Región (fijo)
+# ================
+REGION_COL = "Región Comercial_Act 2026"
+df_ind = calcular_indicadores(df_gec_base, REGION_COL)
+df_ind_comp = calcular_indicadores(df_gec_comp, REGION_COL) if not df_gec_comp.empty else pd.DataFrame()
+
+# --- Comparativos (Δ) para la tabla principal por Región ---
+df_diff = pd.DataFrame()
+if activar_comparacion and not df_ind_comp.empty and not df_ind.empty:
+    comunes = df_ind["Nivel"].isin(df_ind_comp["Nivel"])
+    base = df_ind[comunes].set_index("Nivel")
+    comp = df_ind_comp.set_index("Nivel")
+    df_diff = base.copy()
+    for col in ["Geoeficiencia (%)", "Geoefectividad (%)", "Pedido Omnicanal (%)"]:
+        # Abreviar solo en los Δ para que no se alargue
+        abrev = {
+            "Geoeficiencia (%)": "Geoefic.",
+            "Geoefectividad (%)": "Geoefect.",
+            "Pedido Omnicanal (%)": "Omnicanal",
+        }[col]
+        df_diff[f"Δ {abrev}"] = (base[col] - comp[col]).round(1)
+
+    # Δ de tiempo de atención (string con flechas)
+    base_t = pd.to_timedelta(base["Tiempo de atencion"], errors="coerce")
+    comp_t = pd.to_timedelta(comp["Tiempo de atencion"], errors="coerce")
+    delta_seg = (base_t - comp_t).dt.total_seconds()
+
+    def formatear_delta_tiempo(seg):
+        if pd.isna(seg): return ""
+        signo = "↑ +" if seg > 0 else "↓ -" if seg < 0 else "= "
+        seg = abs(int(seg))
+        m, s = divmod(seg, 60)
+        h, m = divmod(m, 60)
+        if h > 0: return f"{signo}{h} h {m} m"
+        elif m > 0: return f"{signo}{m} m {s} s"
+        else: return f"{signo}{s} s"
+
+    df_diff["Δ Tiempo"] = delta_seg.apply(formatear_delta_tiempo)
+    df_diff = df_diff.reset_index()
+
+# --- Estilo de color (se aplica a columnas Δ) ---
+def color_delta(val):
+    if pd.isnull(val) or val == "":
+        return ""
+
+    # 🟢🔴 Si es numérico puro
+    if isinstance(val, (float, int)):
+        if val > 0:
+            return "color: #7ED957; font-weight: bold;"
+        elif val < 0:
+            return "color: #FF5757; font-weight: bold;"
+        else:
+            return "color: #aaa;"
+
+    # 🟢🔴 Si es texto formateado con signo (+ / -)
+    if isinstance(val, str):
+        if any(s in val for s in ["+", "↑"]):
+            return "color: #7ED957; font-weight: bold;"
+        elif any(s in val for s in ["-", "↓"]):
+            return "color: #FF5757; font-weight: bold;"
+        else:
+            return "color: #aaa;"
+
+    return ""
+
+# ============================
+#  Top / Bottom 5 por Región
+# ============================
+col_top, col_table = st.columns([7, 12])
+with col_top:
+    st.subheader("Top y Bottom por GEC - Geoefectividad")
+    import plotly.express as px
+    df_top5 = df_ind.sort_values("Geoefectividad (%)", ascending=False).head(5)
+    df_bottom5 = df_ind.sort_values("Geoefectividad (%)", ascending=True).head(5)
+
+    def etiqueta(row):
+        base_val = f"{row['Geoefectividad (%)']:.1f}%"
+        if activar_comparacion and not df_ind_comp.empty and row["Nivel"] in df_ind_comp["Nivel"].values:
+            delta = row["Geoefectividad (%)"] - df_ind_comp.set_index("Nivel").loc[row["Nivel"], "Geoefectividad (%)"]
+            return f"{base_val} ({delta:+.1f}%)"
+        return base_val
+
+    fig_top = px.bar(
+        df_top5, x="Nivel", y="Geoefectividad (%)",
+        text=[etiqueta(r) for _, r in df_top5.iterrows()],
+        color_discrete_sequence=["#7ED957"]
+    )
+    fig_bottom = px.bar(
+        df_bottom5, x="Nivel", y="Geoefectividad (%)",
+        text=[etiqueta(r) for _, r in df_bottom5.iterrows()],
+        color_discrete_sequence=["#FF5757"]
+    )
+    for fig in [fig_top, fig_bottom]:
+        fig.update_traces(textposition="outside")
+        fig.update_layout(
+            font=dict(color="white"), plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", height=430,
+        )
+    fig_top.update_layout(title="🏆 Top 5")
+    fig_bottom.update_layout(title="🪫 Bottom 5")
+    st.plotly_chart(fig_top, config={"responsive": True, "displayModeBar": False}, use_container_width=True)
+    st.plotly_chart(fig_bottom, config={"responsive": True, "displayModeBar": False}, use_container_width=True)
+
+# ============================
+#  Tabla principal por Región
+# ============================
+with col_table:
+    st.markdown("#### 📊 Tabla comparativa por Región")
+    if not df_diff.empty:
+        # Reordenar: KPI seguido de su Δ abreviado
+        columnas = ["Nivel",
+                    "Geoeficiencia (%)", "Δ Geoefic.",
+                    "Geoefectividad (%)", "Δ Geoefect.",
+                    "Pedido Omnicanal (%)", "Δ Omnicanal",
+                    "Tiempo de atencion", "Δ Tiempo",
+                    "Hora de llegada"]
+        columnas = [c for c in columnas if c in df_diff.columns or c == "Nivel"]
+        df_display = df_diff[columnas].copy()
+        # Mantener Δ como numérico; formateo y color con Styler
+        delta_cols = [c for c in df_display.columns if c in ["Δ Geoefic.", "Δ Geoefect.", "Δ Omnicanal", "Δ Tiempo"]]
+        styler = df_display.style.format({
+            "Geoeficiencia (%)": "{:.1f}%",
+            "Geoefectividad (%)": "{:.1f}%",
+            "Pedido Omnicanal (%)": "{:.1f}%",
+            **{c: "{:+.1f} %" for c in df_display.columns if c in ["Δ Geoefic.", "Δ Geoefect.", "Δ Omnicanal"]}
+        }).map(color_delta, subset=delta_cols)
+        st.dataframe(
+            styler,
+            width='stretch', hide_index=True,
+            column_config={"Nivel": st.column_config.TextColumn("Región", pinned="left")}
+        )
+    else:
+        st.dataframe(
+            df_ind.style.format({
+                "Geoeficiencia (%)": "{:.1f}%",
+                "Geoefectividad (%)": "{:.1f}%",
+                "Pedido Omnicanal (%)": "{:.1f}%",
+            }),
+            width='stretch', hide_index=True,
+            column_config={"Nivel": st.column_config.TextColumn("Región", pinned="left")}
+        )
+
+    # =============================================================
+    # 2) Detalle por Región seleccionada → radio Jefatura / Ruta
+    # =============================================================
+    st.markdown(" ")
+
+    regiones_disp = sorted(df_gec_base[REGION_COL].dropna().unique().tolist())
+    if len(regiones_disp) == 0:
+        st.info("⚠️ No hay regiones disponibles con los filtros actuales.")
+    else:
+        region_sel = st.selectbox(
+            "Elige la región a detallar:", options=regiones_disp, key="detalle_region"
+        )
+
+        vista_detalle = st.radio(
+            "📊 Ver detalle por:", options=["Jefatura", "Ruta"], horizontal=True, key="modo_detalle_selector"
+        )
+
+        col_jef_exist = "Jefatura" if "Jefatura" in df_gec_base.columns else ("Jefatura_y" if "Jefatura_y" in df_gec_base.columns else None)
+        if vista_detalle == "Jefatura" and col_jef_exist is None:
+            st.error("No se encontró la columna de Jefatura en el dataset.")
+        else:
+            col_agr = col_jef_exist if vista_detalle == "Jefatura" else "Ruta"
+
+            # Filtrar región
+            df_reg_base = df_gec_base[df_gec_base[REGION_COL] == region_sel].copy()
+            df_reg_comp = df_gec_comp[df_gec_comp[REGION_COL] == region_sel].copy() if activar_comparacion and not df_gec_comp.empty else pd.DataFrame()
+
+            base_det = calcular_indicadores(df_reg_base, col_agr)
+            comp_det = calcular_indicadores(df_reg_comp, col_agr) if not df_reg_comp.empty else pd.DataFrame()
+
+            # Comparativos para el detalle
+            df_det_diff = pd.DataFrame()
+            if activar_comparacion and not comp_det.empty and not base_det.empty:
+                comunes = base_det["Nivel"].isin(comp_det["Nivel"])
+                b = base_det[comunes].set_index("Nivel")
+                c = comp_det.set_index("Nivel")
+                df_det_diff = b.copy()
+                # % (abreviadas en Δ)
+                abrev_map = {"Geoeficiencia (%)": "Geoefic.", "Geoefectividad (%)": "Geoefect.", "Pedido Omnicanal (%)": "Omnicanal"}
+                for col in abrev_map:
+                    if col in b.columns and col in c.columns:
+                        df_det_diff[f"Δ {abrev_map[col]}"] = (b[col] - c[col]).round(1)
+                # Tiempo
+                bt = pd.to_timedelta(b["Tiempo de atencion"], errors="coerce")
+                ct = pd.to_timedelta(c["Tiempo de atencion"], errors="coerce")
+                dseg = (bt - ct).dt.total_seconds()
+                df_det_diff["Δ Tiempo"] = dseg.apply(lambda seg: (
+                    "" if pd.isna(seg) else (
+                        ("↑ +" if seg > 0 else ("↓ -" if seg < 0 else "= ")) + (
+                            (lambda s: (f"{s//3600} h {(s%3600)//60} m" if s>=3600 else (f"{(s//60)} m {s%60} s" if s>=60 else f"{s} s")))(abs(int(seg)))
+                        )
+                    )
+                ))
+                df_det_diff = df_det_diff.reset_index()
+
+            st.markdown(f"#### 📊 Detalle por {vista_detalle} — {region_sel}")
+
+            if not df_det_diff.empty:
+                cols = ["Nivel",
+                        "Geoeficiencia (%)", "Δ Geoefic.",
+                        "Geoefectividad (%)", "Δ Geoefect.",
+                        "Pedido Omnicanal (%)", "Δ Omnicanal",
+                        "Tiempo de atencion", "Δ Tiempo",
+                        "Hora de llegada"]
+                cols = [c for c in cols if c in df_det_diff.columns or c == "Nivel"]
+                show_df = df_det_diff[cols].copy()
+                # Mantener Δ como numérico; formateo y color con Styler
+                delta_cols_det = [c for c in show_df.columns if c.startswith("Δ")]
+                styler_det = show_df.style.format({
+                    "Geoeficiencia (%)": "{:.1f}%",
+                    "Geoefectividad (%)": "{:.1f}%",
+                    "Pedido Omnicanal (%)": "{:.1f}%",
+                    **{c: "{:+.1f} %" for c in show_df.columns if c in ["Δ Geoefic.", "Δ Geoefect.", "Δ Omnicanal"]}
+                }).map(color_delta, subset=delta_cols_det)
+                st.dataframe(
+                    styler_det,
+                    width='stretch', hide_index=True,
+                    column_config={"Nivel": st.column_config.TextColumn(vista_detalle, pinned="left")}
+                )
+            else:
+                st.dataframe(
+                    base_det.style.format({
+                        "Geoeficiencia (%)": "{:.1f}%",
+                        "Geoefectividad (%)": "{:.1f}%",
+                        "Pedido Omnicanal (%)": "{:.1f}%",
+                    }),
+                    width='stretch',height=250, hide_index=True,
+                    column_config={"Nivel": st.column_config.TextColumn(vista_detalle, pinned="left")}
+                )
