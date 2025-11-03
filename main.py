@@ -1052,10 +1052,9 @@ col_f1, col_f2, col_f3 = st.columns([2,1,5])
 with col_f1:
     # --- Filtro de GEC ---
     gecs_disponibles = sorted(df_gec["GEC"].dropna().unique())
-    gecs_seleccionados = st.multiselect(
-        "Selecciona uno o varios GEC:",
+    gec_seleccionado = st.selectbox(
+        "Selecciona un GEC:",
         options=gecs_disponibles,
-        default=gecs_disponibles,
         key="filtro_gec"
     )
 
@@ -1076,12 +1075,12 @@ with col_f3:
     elif farmer_option == "Excluir Farmer Comercial":
         df_gec = df_gec[df_gec["Descripción Tipo"] != "Farmer Comercial"]
 
-# Evita errores si no hay GEC seleccionados
-if not gecs_seleccionados:
-    st.warning("⚠️ Por favor selecciona al menos un GEC para continuar.")
+# Evita errores si no hay GEC seleccionado
+if not gec_seleccionado:
+    st.warning("⚠️ Por favor selecciona un GEC para continuar.")
     st.stop()
 
-df_gec = df_gec[df_gec["GEC"].isin(gecs_seleccionados)]
+df_gec = df_gec[df_gec["GEC"] == gec_seleccionado]
 
 # --- Aplicar rangos ---
 df_gec_base = filtrar_por_rango(df_gec, rango_fechas)
